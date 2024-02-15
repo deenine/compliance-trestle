@@ -25,7 +25,7 @@ import re
 import traceback
 from typing import Iterator, List, Optional
 
-from trestle.core.catalog.catalog_interface import CatalogInterface
+from trestle.core.catalog.catalog_interface import CatalogInterface, ControlInterface
 from trestle.oscal.catalog import Catalog
 from trestle.oscal.catalog import Control
 from trestle.oscal.common import HowMany
@@ -45,6 +45,9 @@ level_control = 'control'
 level_statement = 'statement'
 level_default = level_statement
 level_list = [level_control, level_statement]
+params_default = True
+params_file_default = None
+verbose_csv_default = False
 
 
 def join_str(s1: Optional[str], s2: Optional[str], sep: str = ' ') -> Optional[str]:
@@ -100,12 +103,15 @@ class CsvHelper:
 class CatalogHelper:
     """OSCAL Catalog Helper."""
 
-    def __init__(self, path) -> None:
+    def __init__(self, path, resolve_parms: bool, verbose_csv: bool) -> None:
         """Initialize."""
         self.path = path
         self.catalog = Catalog.oscal_read(path)
         self.catalog_interface = CatalogInterface(self.catalog)
         self._init_control_parent_map()
+        self.resolve_parms = resolve_parms
+        self.parameters = {}
+        self.verbose_csv = verbose_csv
 
     def _init_control_parent_map(self, recurse=True) -> None:
         """Initialize map: Child Control.id to parent Control."""
@@ -143,13 +149,14 @@ class CatalogHelper:
 
     def get_statement_text_for_part(self, control: Control, part: Part) -> Optional[str]:
         """Get statement text for part."""
-        statement_text = self._derive_text(control, part)
+        statement_text, params = self._derive_text(control, part)
         if part.parts:
             for subpart in part.parts:
                 if '_smt' in subpart.id:
-                    partial_text = self._derive_text(control, subpart)
+                    partial_text, partial_params = self._derive_text(control, subpart)
                     statement_text = join_str(statement_text, partial_text)
-        return statement_text
+                    params = {**params, **partial_params}
+        return statement_text, params
 
     def _withdrawn(self, control: Control) -> Optional[str]:
         """Check if withdrawn."""
@@ -195,11 +202,15 @@ class CatalogHelper:
     def _derive_text(self, control: Control, part: Part) -> Optional[str]:
         """Derive control text."""
         rval = None
+        params = {}
         if part.prose:
             id_ = self._derive_id(part.id)
-            text = self._resolve_parms(control, part.prose)
-            rval = join_str(id_, text)
-        return rval
+            text, params = self._resolve_parms(control, part.prose)
+            if not self.verbose_csv:
+                rval = join_str(id_, text)
+            else:
+                rval = text
+        return rval, params
 
     def _derive_id(self, id_: str) -> str:
         """Derive control text sub-part id."""
@@ -217,38 +228,45 @@ class CatalogHelper:
 
     def _resolve_parms(self, control: Control, utext: str) -> str:
         """Resolve parm."""
-        rtext = self._resolve_parms_for_control(control, utext)
+        rtext, params = self._resolve_parms_for_control(control, utext)
         if '{{' in rtext:
             parent_control = self.get_parent_control(control.id)
             if parent_control:
-                rtext = self._resolve_parms_for_control(parent_control, rtext)
+                rtext, params = self._resolve_parms_for_control(parent_control, rtext)
         if '{{' in rtext:
             family_controls = self.get_family_controls(control.id)
             for family_control in family_controls:
-                rtext = self._resolve_parms_for_control(family_control, rtext)
+                rtext, params = self._resolve_parms_for_control(family_control, rtext)
         if '{{' in rtext:
             text = f'control.id: {control.id} unresolved: {rtext}'
             raise RuntimeError(text)
-        return rtext
+        return rtext, params
 
     def _resolve_parms_for_control(self, control: Control, utext: str) -> str:
         """Resolve parms for control."""
         rtext = utext
         staches: List[str] = re.findall(r'{{.*?}}', utext)
+        params = {}
         if staches:
             for stach in staches:
                 parm_id = stach
                 parm_id = parm_id.replace('{{', '')
                 parm_id = parm_id.replace('}}', '')
                 parm_id = parm_id.split(',')[1].strip()
-                value = self._get_parm_value(control, parm_id)
+                value, returned_params = self._get_parm_value(control, parm_id)
+                params = {**params, **returned_params}
                 if value:
-                    rtext = rtext.replace(stach, value)
-        return rtext
+                    if self.resolve_parms:
+                        rtext = rtext.replace(stach, value)
+                    else:
+                        rtext = rtext.replace(stach, f'[{parm_id}]')
+                        params[parm_id] = value
+        return rtext, params
 
     def _get_parm_value(self, control: Control, parm_id: str) -> str:
         """Get parm value."""
         rval = None
+        params = {}
         if control.params:
             for param in control.params:
                 if param.id != parm_id:
@@ -256,34 +274,40 @@ class CatalogHelper:
                 if param.label:
                     rval = f'[Assignment: {param.label}]'
                 elif param.select:
-                    choices = self._get_parm_choices(control, param)
+                    choices, params = self._get_parm_choices(control, param)
                     if param.select.how_many == HowMany.one:
                         rval = f'[Selection (one): {choices}]'
                     else:
                         rval = f'[Selection (one or more): {choices}]'
                     break
-        return rval
+        return rval, params
 
     def _get_parm_choices(self, control: Control, param: Parameter) -> str:
         """Get parm choices."""
         choices = ''
+        params = {}
         for choice in param.select.choice:
-            rchoice = self._resolve_parms(control, choice)
+            rchoice, rparams = self._resolve_parms(control, choice)
+            params = {**params, **rparams}
             if choices:
                 choices += f'; {rchoice}'
             else:
                 choices += f'{rchoice}'
-        return choices
+        return choices, params
 
 
 class ContentManager():
     """Content manager."""
 
-    def __init__(self, catalog_helper: CatalogHelper) -> None:
+    def __init__(self, catalog_helper: CatalogHelper, resolve_parms: bool, verbose_csv: bool) -> None:
         """Initialize."""
         self.catalog_helper = catalog_helper
         self.rows = []
+        self.parameters = {}
         self.row_template = None
+        self.resolve_parms = resolve_parms
+        self.verbose_csv = verbose_csv
+        self.control_interface = ControlInterface()
 
     def add(self, row: List):
         """Add row."""
@@ -292,9 +316,15 @@ class ContentManager():
         if t_row:
             for index in range(3):
                 if n_row[index] == t_row[index]:
-                    n_row[index] = None
+                    if not self.verbose_csv:
+                        n_row[index] = None
         self.rows.append(n_row)
         self.row_template = row
+
+    def add_params(self, params: dict):
+        """Add params."""
+        for key in params:
+            self.parameters[key] = params[key]
 
     def get_content(self, level: str) -> List:
         """Get content."""
@@ -304,35 +334,68 @@ class ContentManager():
             rval = self._get_content_by_statement()
         return rval
 
+    def get_params(self) -> List:
+        """Return parameters dict as list of lists."""
+        params = [['Parameter ID', 'Value']]
+        for k, v in sorted(self.parameters.items()):
+            params.append([k, v])
+        return params
+
     def _get_content_by_statement(self) -> List:
         """Get content by statement."""
         catalog_helper = self.catalog_helper
-        header = ['Control Identifier', 'Control Title', 'Statement Identifier', 'Statement Text']
+        if self.verbose_csv:
+            header = ['Sort ID', 'Control Family', 'Control Identifier', 'Control Title', 'Statement Identifier', 'Statement Text']
+        else:
+            header = ['Control Identifier', 'Control Title', 'Statement Identifier', 'Statement Text']
+
+        if not self.resolve_parms:
+            header.append('Parameters')
         self.rows.append(header)
         for control in catalog_helper.get_controls():
-            control_id = convert_control_id(control.id)
             if control.parts:
                 self._add_parts_by_statement(control)
             else:
-                statement_text = catalog_helper.get_statement_text_for_control(control)
-                row = [control_id, control.title, '', statement_text]
+                statement_text, params = catalog_helper.get_statement_text_for_control(control)
+                if self.verbose_csv:
+                    sort_id = convert_control_id(self.control_interface.get_sort_id(control))
+                    control_id = convert_control_id(control.id)
+                    family = self._get_family(control)
+                    row = [sort_id, family, control_id, control.title, '', statement_text]
+                else:
+                    control_id = convert_control_id(control.id)
+                    row = [control_id, control.title, '', statement_text]
+                if not self.resolve_parms:
+                    self.add_params(params)
+                    params_text = ', '.join(f'{k}: {v}' for k, v in sorted(params.items()))
+                    row.append(params_text)
                 self.add(row)
         return self.rows
 
     def _add_subparts_by_statement(self, control: Control, part: Part) -> None:
         """Add subparts by statement."""
         catalog_helper = self.catalog_helper
-        control_id = convert_control_id(control.id)
         for subpart in part.parts:
             if '_smt' in subpart.id:
-                statement_text = catalog_helper.get_statement_text_for_part(control, subpart)
-                row = [control_id, control.title, convert_smt_id(subpart.id), statement_text]
+                statement_text, params = catalog_helper.get_statement_text_for_part(control, subpart)
+                if self.verbose_csv:
+                    family = self._get_family(control)
+                    sort_id = convert_control_id(self.control_interface.get_sort_id(control))
+                    control_id = convert_control_id(control.id)
+                    row = [sort_id, family, control_id, control.title, convert_smt_id(subpart.id), statement_text]
+                else:
+                    control_id = convert_control_id(control.id)
+                    row = [control_id, control.title, '', statement_text]
+
+                if not self.resolve_parms:
+                    self.add_params(params)
+                    params_text = ', '.join(f'{k}: {v}' for k, v in sorted(params.items()))
+                    row.append(params_text)
                 self.add(row)
 
     def _add_parts_by_statement(self, control: Control) -> None:
         """Add parts by statement."""
         catalog_helper = self.catalog_helper
-        control_id = convert_control_id(control.id)
         for part in control.parts:
             if part.id:
                 if '_smt' not in part.id:
@@ -340,8 +403,19 @@ class ContentManager():
                 if part.parts:
                     self._add_subparts_by_statement(control, part)
                 else:
-                    statement_text = catalog_helper.get_statement_text_for_part(control, part)
-                    row = [control_id, control.title, convert_smt_id(part.id), statement_text]
+                    statement_text, params = catalog_helper.get_statement_text_for_part(control, part)
+                    if self.verbose_csv:
+                        family = self._get_family(control)
+                        sort_id = convert_control_id(self.control_interface.get_sort_id(control))
+                        control_id = convert_control_id(control.id)
+                        row = [sort_id, family, control_id, control.title, convert_smt_id(part.id), statement_text]
+                    else:
+                        control_id = convert_control_id(control.id)
+                        row = [control_id, control.title, convert_smt_id(part.id), statement_text]
+                    if not self.resolve_parms:
+                        self.add_params(params)
+                        params_text = ', '.join(f'{k}: {v}' for k, v in sorted(params.items()))
+                        row.append(params_text)
                     self.add(row)
 
     def _get_content_by_control(self) -> List:
@@ -350,12 +424,20 @@ class ContentManager():
         header = ['Control Identifier', 'Control Title', 'Control Text']
         self.rows.append(header)
         for control in catalog_helper.get_controls():
-            control_id = convert_control_id(control.id)
+            if self.verbose_csv:
+                control_id = convert_control_id(self.control_interface.get_sort_id(control))
+            else:
+                control_id = convert_control_id(control.id)
             if control.parts:
                 self._add_parts_by_control(control)
             else:
-                control_text = catalog_helper.get_statement_text_for_control(control)
-                row = [control_id, control.title, control_text]
+                control_text, params = catalog_helper.get_statement_text_for_control(control)
+                if self.resolve_parms:
+                    row = [control_id, control.title, control_text]
+                else:
+                    self.add_params(params)
+                    params_text = ', '.join(f'{k}: {v}' for k, v in sorted(params.items()))
+                    row = [control_id, control.title, control_text, params_text]
                 self.add(row)
         return self.rows
 
@@ -384,6 +466,13 @@ class ContentManager():
                     control_text = join_str(control_text, statement_text)
         row = [control_id, control.title, control_text]
         self.add(row)
+
+    def _get_family(self, control: Control) -> str:
+        family = self.catalog_helper.catalog_interface.get_group_info_by_control(control.id)
+        rval = ''
+        if family is not None and len(family) > 1:
+            rval = f'{family[1]} ({family[0].upper()})'
+        return rval
 
 
 class OscalCatalogToCsv(TaskBase):
@@ -424,8 +513,17 @@ class OscalCatalogToCsv(TaskBase):
         text1 = '  output-overwrite       = '
         text2 = '(optional) true [default] or false; replace existing output when true.'
         logger.info(text1 + text2)
+        text1 = '  resolve-param          = '
+        text2 = f'(optional) one of: {True} [default] or {False} resolve parameters into control prose.'
+        logger.info(text1 + text2)
+        text1 = '  params-file            = '
+        text2 = f'(optional) filename to write parameters as csv, in output-dir. Requires resolve-param = {True}.'
+        logger.info(text1 + text2)
         text1 = '  level                  = '
         text2 = f'(optional) one of: {level_control} or {level_statement} [default].'
+        logger.info(text1 + text2)
+        text1 = '  verbose-csv            = '
+        text2 = f'(optional) one of: {True} or {False} [default] output more control metadata to csv.'
         logger.info(text1 + text2)
 
     def simulate(self) -> TaskOutcome:
@@ -463,23 +561,40 @@ class OscalCatalogToCsv(TaskBase):
         opth.mkdir(exist_ok=True, parents=True)
         iname = ipth.name.split('.')[0]
         oname = self._config.get('output-name', f'{iname}.csv')
-        opth = opth / oname
-        if not self._overwrite and opth.exists():
-            logger.warning(f'output: {opth} already exists')
+        ofpth = opth / oname
+        if not self._overwrite and ofpth.exists():
+            logger.warning(f'output catalog: {ofpth} already exists')
             return TaskOutcome('failure')
-        csv_helper = CsvHelper(opth)
+        csv_helper = CsvHelper(ofpth)
         # level
         level = self._config.get('level', level_default)
         if level not in level_list:
             logger.warning(f'level: {level} unknown')
             return TaskOutcome('failure')
+        # params
+        resolve_parms = self._config.getboolean('resolve-params', params_default)
+        params_file = self._config.get('params-file', params_file_default)
+        # verbose-csv
+        verbose_csv = self._config.getboolean('verbose-csv', params_default)
         # helper
-        catalog_helper = CatalogHelper(ipth)
+        catalog_helper = CatalogHelper(ipth, resolve_parms, verbose_csv)
         # process
-        content_manager = ContentManager(catalog_helper)
+        content_manager = ContentManager(catalog_helper, resolve_parms, verbose_csv)
         rows = content_manager.get_content(level)
-        # write
+        # write catalog
         csv_helper.write(rows)
-        logger.info(f'output-file: {opth}')
+        logger.info(f'output-file: {ofpth}')
+        # write params
+        if params_file:
+            if resolve_parms:
+                logger.warning('resolve-params = false must be specified to write parameters file')
+                return TaskOutcome('failure')
+            ofpth = opth / params_file
+            if not self._overwrite and ofpth.exists():
+                logger.warning(f'output params: {ofpth} already exists')
+                return TaskOutcome('failure')
+            csv_helper = CsvHelper(ofpth)
+            csv_helper.write(content_manager.get_params())
+
         # success
         return TaskOutcome('success')
