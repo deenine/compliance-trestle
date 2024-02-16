@@ -103,7 +103,7 @@ class CsvHelper:
 class CatalogHelper:
     """OSCAL Catalog Helper."""
 
-    def __init__(self, path, resolve_parms: bool, verbose_csv: bool) -> None:
+    def __init__(self, path, resolve_parms=params_default, verbose_csv=verbose_csv_default) -> None:
         """Initialize."""
         self.path = path
         self.catalog = Catalog.oscal_read(path)
@@ -299,7 +299,7 @@ class CatalogHelper:
 class ContentManager():
     """Content manager."""
 
-    def __init__(self, catalog_helper: CatalogHelper, resolve_parms: bool, verbose_csv: bool) -> None:
+    def __init__(self, catalog_helper: CatalogHelper, resolve_parms=params_default, verbose_csv=verbose_csv_default) -> None:
         """Initialize."""
         self.catalog_helper = catalog_helper
         self.rows = []
@@ -446,9 +446,9 @@ class ContentManager():
         catalog_helper = self.catalog_helper
         for subpart in part.parts:
             if '_smt' in subpart.id:
-                statement_text = catalog_helper.get_statement_text_for_part(control, subpart)
+                statement_text, params = catalog_helper.get_statement_text_for_part(control, subpart)
                 control_text = join_str(control_text, statement_text)
-        return control_text
+        return control_text, params
 
     def _add_parts_by_control(self, control: Control) -> None:
         """Add parts by control."""
@@ -460,9 +460,9 @@ class ContentManager():
                 if '_smt' not in part.id:
                     continue
                 if part.parts:
-                    control_text = self._add_subparts_by_control(control, part, control_text)
+                    control_text, params = self._add_subparts_by_control(control, part, control_text)
                 else:
-                    statement_text = catalog_helper.get_statement_text_for_part(control, part)
+                    statement_text, params = catalog_helper.get_statement_text_for_part(control, part)
                     control_text = join_str(control_text, statement_text)
         row = [control_id, control.title, control_text]
         self.add(row)
@@ -575,7 +575,7 @@ class OscalCatalogToCsv(TaskBase):
         resolve_parms = self._config.getboolean('resolve-params', params_default)
         params_file = self._config.get('params-file', params_file_default)
         # verbose-csv
-        verbose_csv = self._config.getboolean('verbose-csv', params_default)
+        verbose_csv = self._config.getboolean('verbose-csv', verbose_csv_default)
         # helper
         catalog_helper = CatalogHelper(ipth, resolve_parms, verbose_csv)
         # process
