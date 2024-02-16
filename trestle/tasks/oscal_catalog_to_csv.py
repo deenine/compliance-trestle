@@ -356,7 +356,7 @@ class ContentManager():
             if control.parts:
                 self._add_parts_by_statement(control)
             else:
-                statement_text, params = catalog_helper.get_statement_text_for_control(control)
+                statement_text = catalog_helper.get_statement_text_for_control(control)
                 if self.verbose_csv:
                     sort_id = convert_control_id(self.control_interface.get_sort_id(control))
                     control_id = convert_control_id(control.id)
@@ -431,7 +431,7 @@ class ContentManager():
             if control.parts:
                 self._add_parts_by_control(control)
             else:
-                control_text, params = catalog_helper.get_statement_text_for_control(control)
+                control_text = catalog_helper.get_statement_text_for_control(control)
                 if self.resolve_parms:
                     row = [control_id, control.title, control_text]
                 else:
