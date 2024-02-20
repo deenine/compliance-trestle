@@ -385,7 +385,7 @@ class ContentManager():
                     row = [sort_id, family, control_id, control.title, convert_smt_id(subpart.id), statement_text]
                 else:
                     control_id = convert_control_id(control.id)
-                    row = [control_id, control.title, '', statement_text]
+                    row = [control_id, control.title, convert_smt_id(subpart.id), statement_text]
 
                 if not self.resolve_parms:
                     self.add_params(params)
