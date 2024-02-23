@@ -46,6 +46,7 @@ level_statement = 'statement'
 level_default = level_statement
 level_list = [level_control, level_statement]
 params_default = True
+param_ids_default = False
 params_file_default = None
 verbose_csv_default = False
 
@@ -103,7 +104,7 @@ class CsvHelper:
 class CatalogHelper:
     """OSCAL Catalog Helper."""
 
-    def __init__(self, path, resolve_parms=params_default, verbose_csv=verbose_csv_default) -> None:
+    def __init__(self, path, resolve_parms=params_default, verbose_csv=verbose_csv_default, param_ids=param_ids_default) -> None:
         """Initialize."""
         self.path = path
         self.catalog = Catalog.oscal_read(path)
@@ -112,6 +113,7 @@ class CatalogHelper:
         self.resolve_parms = resolve_parms
         self.parameters = {}
         self.verbose_csv = verbose_csv
+        self.param_ids = param_ids
 
     def _init_control_parent_map(self, recurse=True) -> None:
         """Initialize map: Child Control.id to parent Control."""
@@ -257,7 +259,10 @@ class CatalogHelper:
                 params = {**params, **returned_params}
                 if value:
                     if self.resolve_parms:
-                        rtext = rtext.replace(stach, value)
+                        if self.param_ids:
+                            rtext = rtext.replace(stach, f'[{parm_id}]: {value}')
+                        else:
+                            rtext = rtext.replace(stach, value)
                     else:
                         rtext = rtext.replace(stach, f'[{parm_id}]')
                         params[parm_id] = value
@@ -516,6 +521,10 @@ class OscalCatalogToCsv(TaskBase):
         text1 = '  resolve-param          = '
         text2 = f'(optional) one of: {True} [default] or {False} resolve parameters into control prose.'
         logger.info(text1 + text2)
+        text1 = '  param-ids          = '
+        text2 = f'(optional) one of: {True} or {False} [default] always show param ids in control prose (redundant'
+        text3 = f' if resolve-param = {False}).'
+        logger.info(text1 + text2 + text3)
         text1 = '  params-file            = '
         text2 = f'(optional) filename to write parameters as csv, in output-dir. Requires resolve-param = {True}.'
         logger.info(text1 + text2)
@@ -573,11 +582,13 @@ class OscalCatalogToCsv(TaskBase):
             return TaskOutcome('failure')
         # params
         resolve_parms = self._config.getboolean('resolve-params', params_default)
+        param_ids = self._config.getboolean('param-ids', param_ids_default)
+        print(f'param_ids: {param_ids}')
         params_file = self._config.get('params-file', params_file_default)
         # verbose-csv
         verbose_csv = self._config.getboolean('verbose-csv', verbose_csv_default)
         # helper
-        catalog_helper = CatalogHelper(ipth, resolve_parms, verbose_csv)
+        catalog_helper = CatalogHelper(ipth, resolve_parms, verbose_csv, param_ids)
         # process
         content_manager = ContentManager(catalog_helper, resolve_parms, verbose_csv)
         rows = content_manager.get_content(level)
